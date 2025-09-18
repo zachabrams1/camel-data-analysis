@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-Event Analytics Script (updated)
+Simplified Event Analytics Script
 
-Loads attendance.csv, events.csv, people.csv (and optionally invite_tokens.csv)
-Recomputes first event per person based on earliest actual check-in, then produces:
-1) Retention by event — now a grouped bar chart with two bars per event: total attendees vs attendees who returned later
-2) Post-party retention for Launch, Sababa Nights (DX party), BSMNT, Fall 2025 BNL Party
-3) New members by event — now includes two bars per event: new members vs total unique attendees
-4) New members by event type — now includes adjacent return buckets: exactly 1 return, exactly 2 returns, and 3+ returns
-5) Approval friction: not-approved counts and "lost" rate (never returned later)
-6) Attendance counts for the big parties
-7) RSVP to Attendance histogram showing conversion from RSVPs to actual attendances
-
-Outputs:
-- CSVs with computed tables (some new columns/files added)
-- PNG charts in the output folder
+Creates a single master dataset by merging attendance, events, and people data,
+then performs all analysis on this unified dataset. Tracks both first-time attendees
+and first-time RSVPs (who didn't attend) to understand conversion patterns.
 """
 
 import argparse
@@ -23,510 +13,577 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-def load_data(attendance_path, events_path, people_path, invite_tokens_path=None):
+def create_master_dataset(attendance_path, events_path, people_path):
+    """Load and merge all data into a single master dataset."""
+    
+    # Load CSVs
     attendance = pd.read_csv(attendance_path)
     events = pd.read_csv(events_path)
     people = pd.read_csv(people_path)
-    invite_tokens = None
-    if invite_tokens_path and Path(invite_tokens_path).exists():
-        invite_tokens = pd.read_csv(invite_tokens_path)
+    
+    # Parse datetime columns
+    attendance['rsvp_datetime'] = pd.to_datetime(attendance['rsvp_datetime'], errors='coerce')
+    events['start_datetime'] = pd.to_datetime(events['start_datetime'], errors='coerce')
+    
+    # Convert boolean columns
+    attendance['rsvp'] = attendance['rsvp'].astype(bool)
+    attendance['checked_in'] = attendance['checked_in'].astype(bool)
+    attendance['approved'] = attendance['approved'].astype(int)
+    
+    # Merge everything into master dataset
+    master = attendance.merge(events, left_on='event_id', right_on='id', suffixes=('', '_event'))
+    master = master.merge(people, left_on='person_id', right_on='id', suffixes=('', '_person'))
+    
+    # Calculate first attendance (checked_in = True) per person
+    first_attendance = master[master['checked_in']].groupby('person_id').agg({
+        'event_id': 'first',
+        'start_datetime': 'min'
+    }).reset_index()
+    first_attendance.columns = ['person_id', 'first_attendance_event_id', 'first_attendance_datetime']
+    
+    # Calculate first RSVP per person
+    first_rsvp = master[master['rsvp']].groupby('person_id').agg({
+        'event_id': 'first',
+        'start_datetime': 'min'
+    }).reset_index()
+    first_rsvp.columns = ['person_id', 'first_rsvp_event_id', 'first_rsvp_datetime']
+    
+    # Add first attendance and RSVP info to master
+    master = master.merge(first_attendance, on='person_id', how='left')
+    master = master.merge(first_rsvp, on='person_id', how='left')
+    
+    # Add flags
+    master['is_first_attendance'] = (master['event_id'] == master['first_attendance_event_id'])
+    master['is_first_rsvp'] = (master['event_id'] == master['first_rsvp_event_id'])
+    
+    return master, events
 
-    # Parse datetimes
-    if "rsvp_datetime" in attendance.columns:
-        attendance["rsvp_datetime"] = pd.to_datetime(attendance["rsvp_datetime"], errors="coerce")
-    if "start_datetime" in events.columns:
-        events["start_datetime"] = pd.to_datetime(events["start_datetime"], errors="coerce")
-
-    return attendance, events, people, invite_tokens
-
-
-def prep_master(attendance, events, people):
-    # Normalize common fields
-    if "checked_in" in attendance.columns:
-        attendance["checked_in"] = attendance["checked_in"].astype(bool)
-    if "rsvp" in attendance.columns:
-        attendance["rsvp"] = attendance["rsvp"].astype(bool)
-    if "approved" in attendance.columns:
-        # could be T/F or 0/1
-        attendance["approved"] = attendance["approved"].astype(int)
-
-    att = attendance.merge(events, left_on="event_id", right_on="id", suffixes=("", "_event"))
-    att = att.merge(people, left_on="person_id", right_on="id", suffixes=("", "_person"))
-    return att, events
-
-
-def recompute_first_events(att):
-    # First attended = earliest start_datetime where checked_in == True
-    attended = att[att["checked_in"] == True].copy()
-    if attended.empty:
-        raise ValueError("No rows with checked_in == True; cannot compute first events.")
-    first_idx = attended.groupby("person_id")["start_datetime"].idxmin()
-    first_events = attended.loc[first_idx, ["person_id", "event_id", "start_datetime"]].rename(
-        columns={"event_id": "first_event_id", "start_datetime": "first_event_time"}
-    )
-    # Attach to master
-    att = att.merge(first_events, on="person_id", how="left")
-    return att, first_events, attended
-
-
-def retention_by_event(events, attended):
-    rows = []
-    for _, row in events.sort_values("start_datetime").iterrows():
-        eid = row["id"]
-        etime = row["start_datetime"]
-        attendees = attended[attended["event_id"] == eid]["person_id"].unique()
-        n_att = len(attendees)
-        if n_att == 0:
-            rows.append({
-                "event_id": eid,
-                "event_name": row.get("event_name", eid),
-                "category": row.get("category"),
-                "start_datetime": etime,
-                "attendees": 0,
-                "returned_later": 0,
-                "retention_rate": np.nan,
-            })
-            continue
-        later = attended[(attended["person_id"].isin(attendees)) & (attended["start_datetime"] > etime)]
-        n_ret = later["person_id"].nunique()
-        rows.append({
-            "event_id": eid,
-            "event_name": row.get("event_name", eid),
-            "category": row.get("category"),
-            "start_datetime": etime,
-            "attendees": n_att,
-            "returned_later": n_ret,
-            "retention_rate": n_ret / n_att,
+def retention_analysis(master, events, outdir):
+    """Analyze retention by event including RSVPs."""
+    
+    # Get attendees and RSVPs per event and who returned later
+    retention_data = []
+    
+    for event_id in events['id'].unique():
+        event_rsvps = master[(master['event_id'] == event_id) & (master['rsvp'])]['person_id'].unique()
+        event_attendees = master[(master['event_id'] == event_id) & (master['checked_in'])]['person_id'].unique()
+        event_time = events[events['id'] == event_id]['start_datetime'].iloc[0]
+        event_name = events[events['id'] == event_id]['event_name'].iloc[0]
+        
+        # Count who returned to ANY later event (attendees)
+        later_attendances = master[
+            (master['person_id'].isin(event_attendees)) & 
+            (master['checked_in']) & 
+            (master['start_datetime'] > event_time)
+        ]['person_id'].unique()
+        
+        # Count RSVPs who attended a later event
+        rsvp_later_attended = master[
+            (master['person_id'].isin(event_rsvps)) & 
+            (master['checked_in']) & 
+            (master['start_datetime'] > event_time)
+        ]['person_id'].unique()
+        
+        retention_data.append({
+            'event_id': event_id,
+            'event_name': event_name,
+            'event_time': event_time,
+            'total_rsvps': len(event_rsvps),
+            'total_attendees': len(event_attendees),
+            'attendees_returned_later': len(later_attendances),
+            'rsvps_attended_later': len(rsvp_later_attended),
+            'retention_rate': len(later_attendances) / len(event_attendees) if len(event_attendees) > 0 else 0
         })
-    # Sort chronologically for plotting legibility
-    return pd.DataFrame(rows).sort_values(["start_datetime"]).reset_index(drop=True)
-
-
-def post_party_retention(events, first_events, attended):
-    # Identify the four parties (robust matching)
-    name_lower = events["event_name"].str.lower().fillna("")
-    parties_mask = (
-        (name_lower == "launch")
-        | (name_lower.str.contains(r"\bsababa nights\b"))
-        | (name_lower.str.contains(r"\bbsmnt\b"))
-        | (name_lower.str.contains(r"fall\s*2025.*party"))
-    )
-    parties = events[parties_mask].copy()
-    # fallback alias if dataset uses slightly different label for DX
-    if parties.empty and name_lower.str.contains("sababa").any():
-        parties = events[name_lower.str.contains("sababa", na=False)].copy()
-
-    rows = []
-    for _, row in parties.sort_values("start_datetime").iterrows():
-        pid = row["id"]
-        ptime = row["start_datetime"]
-        first_timers = first_events[first_events["first_event_id"] == pid]["person_id"].unique()
-        n_first = len(first_timers)
-        if n_first == 0:
-            rows.append({
-                "party_id": pid,
-                "party_name": row.get("event_name", pid),
-                "party_time": ptime,
-                "first_timers": 0,
-                "later_returned": 0,
-                "post_party_retention": np.nan,
-            })
-            continue
-        later = attended[(attended["person_id"].isin(first_timers)) & (attended["start_datetime"] > ptime)]
-        n_returned = later["person_id"].nunique()
-        rows.append({
-            "party_id": pid,
-            "party_name": row.get("event_name", pid),
-            "party_time": ptime,
-            "first_timers": n_first,
-            "later_returned": n_returned,
-            "post_party_retention": n_returned / n_first,
-        })
-    return pd.DataFrame(rows).sort_values("party_time").reset_index(drop=True)
-
-
-def new_members_tables(first_events, events, attended):
-    """Return three tables:
-    - by_event: per-event new members and total unique attendees
-    - by_type: per-category new members
-    - by_type_returns: per-category counts of first-timers who returned exactly 1x, exactly 2x, and 3+ times
-    """
-    first_with_meta = first_events.merge(
-        events[["id", "event_name", "category", "start_datetime"]],
-        left_on="first_event_id",
-        right_on="id",
-        how="left",
-    )
-
-    # New members by event (first-time attendees)
-    by_event = (
-        first_with_meta.groupby(["first_event_id", "event_name", "category", "start_datetime"])["person_id"]
-        .nunique()
-        .reset_index(name="new_members")
-    )
-    # Total unique attendees by event
-    total_att = (
-        attended.groupby("event_id")["person_id"].nunique().reset_index(name="total_attendees")
-    )
-    by_event = by_event.merge(
-        total_att, left_on="first_event_id", right_on="event_id", how="left"
-    ).drop(columns=["event_id"]).sort_values("new_members", ascending=False)
-
-    # New members by type (category)
-    by_type = (
-        first_with_meta.groupby("category")["person_id"].nunique().reset_index(name="new_members")
-    ).sort_values("new_members", ascending=False)
-
-    # --- Return buckets per category (exactly 1, exactly 2, and 3+ future attendances) ---
-    # For each person, count future attendances strictly after their first_event_time
-    tmp = attended.merge(
-        first_events[["person_id", "first_event_time"]], on="person_id", how="left"
-    )
-    tmp_future = tmp[tmp["start_datetime"] > tmp["first_event_time"]].copy()
-    returns_per_person = (
-        tmp_future.groupby("person_id").size().reset_index(name="n_returns")
-    )
-    # Ensure everyone appears (including 0 returns)
-    returns_per_person = first_events[["person_id"]].merge(
-        returns_per_person, on="person_id", how="left"
-    ).fillna({"n_returns": 0})
-
-    # Attach category of first event
-    returns_with_cat = returns_per_person.merge(
-        first_with_meta[["person_id", "category"]], on="person_id", how="left"
-    )
-
-    def bucket_counts(g):
-        n1 = (g["n_returns"] == 1).sum()
-        n2 = (g["n_returns"] == 2).sum()
-        n3p = (g["n_returns"] >= 3).sum()
-        nm = g.shape[0]
-        return pd.Series({
-            "new_members": nm,
-            "returned_1": n1,
-            "returned_2": n2,
-            "returned_3plus": n3p,
-        })
-
-    by_type_returns = (
-        returns_with_cat.groupby("category").apply(bucket_counts).reset_index()
-    ).sort_values("new_members", ascending=False)
-
-    return by_event, by_type, by_type_returns
-
-
-def approval_loss(att, attended):
-    # People who RSVP'd but not approved for that event
-    if "rsvp" not in att.columns or "approved" not in att.columns:
-        return pd.DataFrame()
-    na = (
-        att[(att["rsvp"] == True) & (att["approved"] == 0)]
-        .drop_duplicates(subset=["person_id", "event_id"]).copy()
-    )
-
-    def lost_fn(group):
-        etime = group["start_datetime"].iloc[0]
-        persons = group["person_id"].unique()
-        later = attended[(attended["person_id"].isin(persons)) & (attended["start_datetime"] > etime)]
-        returned = set(later["person_id"].unique())
-        lost = [p for p in persons if p not in returned]
-        return pd.Series(
-            {
-                "not_approved_count": len(persons),
-                "lost_count": len(lost),
-                "lost_rate": (len(lost) / len(persons)) if len(persons) else np.nan,
-            }
-        )
-
-    return (
-        na.groupby(["event_id", "event_name", "start_datetime"]).apply(lost_fn).reset_index()
-    ).sort_values("lost_rate", ascending=False)
-
-
-def party_attendance_counts(events, attended):
-    # Attendance counts for the four parties
-    name_lower = events["event_name"].str.lower().fillna("")
-    parties_mask = (
-        (name_lower == "launch")
-        | (name_lower.str.contains(r"\bsababa nights\b"))
-        | (name_lower.str.contains(r"\bbsmnt\b"))
-        | (name_lower.str.contains(r"fall\s*2025.*party"))
-    )
-    parties = events[parties_mask].copy()
-    counts = (
-        attended[attended["event_id"].isin(parties["id"])].groupby("event_id")["person_id"].nunique().reset_index(name="attendee_count")
-        .merge(events[["id", "event_name", "start_datetime"]], left_on="event_id", right_on="id")
-        .sort_values("start_datetime")
-    )
-    return counts
-
-
-# -------------------- Plotting --------------------
-
-def _grouped_bar(ax, labels, series_list, series_labels, width=0.38, rotate=45):
-    x = np.arange(len(labels))
-    n = len(series_list)
-    offsets = np.linspace(-width * (n - 1) / 2, width * (n - 1) / 2, n)
-    for s, off, lab in zip(series_list, offsets, series_labels):
-        ax.bar(x + off, s, width, label=lab)
+    
+    retention_df = pd.DataFrame(retention_data).sort_values('event_time')
+    
+    # Plot grouped bar chart with 4 bars
+    fig, ax = plt.subplots(figsize=(16, 8))
+    x = np.arange(len(retention_df))
+    width = 0.2
+    
+    bars1 = ax.bar(x - 1.5*width, retention_df['total_rsvps'], width, label='Total RSVPs', color='lightcoral')
+    bars2 = ax.bar(x - 0.5*width, retention_df['total_attendees'], width, label='Total Attendees', color='steelblue')
+    bars3 = ax.bar(x + 0.5*width, retention_df['attendees_returned_later'], width, label='Attendees Returned Later', color='darkgreen')
+    bars4 = ax.bar(x + 1.5*width, retention_df['rsvps_attended_later'], width, label='RSVPs Attended Later', color='darkorange')
+    
+    ax.set_xlabel('Event')
+    ax.set_ylabel('Number of People')
+    ax.set_title('Event Retention: RSVPs, Attendance, and Return Patterns')
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=rotate, ha="right")
+    ax.set_xticklabels(retention_df['event_name'], rotation=45, ha='right')
     ax.legend()
-    ax.margins(x=0.01)
-
-
-def plot_retention_by_event(df, outdir):
-    """Grouped bars: total attendees vs attendees who returned later."""
-    dfp = df.sort_values("start_datetime")
-    labels = dfp["event_name"].tolist()
-    attendees = dfp["attendees"].fillna(0).astype(int).tolist()
-    returned = dfp["returned_later"].fillna(0).astype(int).tolist()
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    _grouped_bar(ax, labels, [attendees, returned], ["Attendees", "Returned later"], width=0.42, rotate=75)
-    ax.set_ylabel("People (count)")
-    ax.set_title("Attendees vs Returned Later — by Event")
-    fig.tight_layout()
-    fp = outdir / "retention_by_event.png"
-    fig.savefig(fp, dpi=150)
-    plt.close(fig)
-    return fp
-
-
-def plot_post_party(df, outdir):
-    plt.figure(figsize=(10, 6))
-    plt.bar(df["party_name"], (df["post_party_retention"] * 100).fillna(0))
-    plt.ylabel("Post-Party Retention (%)")
-    plt.title("Post-Party Retention (First Event = That Party)\nLaunch, Sababa Nights, BS MNT, Fall 2025")
-    plt.xticks(rotation=45, ha="right")
+    
+    # Add value labels on bars
+    for bars in [bars1, bars2, bars3, bars4]:
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{int(height)}', ha='center', va='bottom', fontsize=7)
+    
     plt.tight_layout()
-    fp = outdir / "post_party_retention.png"
-    plt.savefig(fp, dpi=150)
+    plt.savefig(outdir / 'retention_by_event.png', dpi=150, bbox_inches='tight')
     plt.close()
-    return fp
+    
+    return retention_df
 
-
-def plot_new_members_by_event(by_event, outdir, top=16):
-    """Grouped bars: new members vs total unique attendees for top-N events by new members."""
-    top_events = by_event.sort_values("new_members", ascending=False).head(top)
-    labels = top_events["event_name"].tolist()
-    newm = top_events["new_members"].tolist()
-    total = top_events["total_attendees"].fillna(0).astype(int).tolist()
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    _grouped_bar(ax, labels, [total, newm], ["Total attendees", "New members (first-timers)"], width=0.42, rotate=45)
-    ax.set_ylabel("People (count)")
-    ax.set_title(f"Top {len(labels)} Events — New Members vs Total Attendees")
-    fig.tight_layout()
-    fp = outdir / "new_members_top_events.png"
-    fig.savefig(fp, dpi=150)
-    plt.close(fig)
-    return fp
-
-
-def plot_post_party_three_bars(party_conv_df, party_counts, outdir):
-    """
-    Produces a grouped bar chart per party:
-      - total attendees
-      - first-timers
-      - first-timers who returned later
-    """
-    # Merge totals in
-    df = party_conv_df.merge(
-        party_counts[["event_id", "attendee_count"]],
-        left_on="party_id",
-        right_on="event_id",
-        how="left",
-    ).drop(columns=["event_id"])
-
-    # Ensure stable chronological order
-    df = df.sort_values("party_time").copy()
-
-    # Rename for clarity
-    df = df.rename(
-        columns={
-            "attendee_count": "attendees",
-            "first_timers": "first_timers",
-            "later_returned": "first_then_returned",
-        }
-    )
-
-    # Fill any missing counts with 0 to avoid NaNs in bars
-    for c in ["attendees", "first_timers", "first_then_returned"]:
-        df[c] = df[c].fillna(0).astype(int)
-
-    labels = df["party_name"].tolist()
-    x = np.arange(len(labels))
-    width = 0.28
-
-    plt.figure(figsize=(12, 6))
-    plt.bar(x - width, df["attendees"], width, label="Attendees")
-    plt.bar(x, df["first_timers"], width, label="First-timers")
-    plt.bar(x + width, df["first_then_returned"], width, label="First-timers who returned")
-
-    plt.xticks(x, labels, rotation=45, ha="right")
-    plt.ylabel("People (count)")
-    plt.title("Post-Party Funnel: Attendees vs First-Timers vs First-Timers Who Returned")
-    plt.legend()
+def new_members_analysis(master, events, outdir):
+    """Analyze new attendees by event and category, including first-time RSVP tracking."""
+    
+    # New attendees by event (first attendances)
+    new_by_event = master[master['is_first_attendance']].groupby(['event_id', 'event_name']).size().reset_index(name='new_members')
+    
+    # Total unique RSVPs by event
+    total_rsvps_by_event = master[master['rsvp']].groupby(['event_id', 'event_name'])['person_id'].nunique().reset_index(name='total_rsvps')
+    
+    # Total unique attendees by event
+    total_by_event = master[master['checked_in']].groupby(['event_id', 'event_name'])['person_id'].nunique().reset_index(name='total_attendees')
+    
+    # First-time RSVPs (who didn't attend) by event
+    first_rsvp_no_attend = master[(master['is_first_rsvp']) & (~master['checked_in'])].groupby(['event_id', 'event_name']).agg({
+        'person_id': lambda x: x.unique().tolist()
+    }).reset_index()
+    first_rsvp_no_attend.columns = ['event_id', 'event_name', 'first_rsvp_people']
+    
+    # Check which first-time RSVPers returned later
+    first_rsvp_returns = []
+    for _, row in first_rsvp_no_attend.iterrows():
+        event_id = row['event_id']
+        event_time = events[events['id'] == event_id]['start_datetime'].iloc[0]
+        people = row['first_rsvp_people']
+        
+        returned_later = master[
+            (master['person_id'].isin(people)) & 
+            (master['checked_in']) & 
+            (master['start_datetime'] > event_time)
+        ]['person_id'].unique()
+        
+        first_rsvp_returns.append({
+            'event_id': event_id,
+            'event_name': row['event_name'],
+            'first_rsvp_no_attend': len(people),
+            'first_rsvp_returned': len(returned_later)
+        })
+    
+    first_rsvp_df = pd.DataFrame(first_rsvp_returns)
+    
+    # Merge all data
+    new_members_df = new_by_event.merge(total_rsvps_by_event, on=['event_id', 'event_name'])
+    new_members_df = new_members_df.merge(total_by_event, on=['event_id', 'event_name'])
+    new_members_df = new_members_df.merge(first_rsvp_df, on=['event_id', 'event_name'], how='left')
+    new_members_df = new_members_df.fillna(0)
+    new_members_df[['first_rsvp_no_attend', 'first_rsvp_returned']] = new_members_df[['first_rsvp_no_attend', 'first_rsvp_returned']].astype(int)
+    
+    # Sort by event time to show chronologically
+    event_times = events[['id', 'start_datetime']].rename(columns={'id': 'event_id'})
+    new_members_df = new_members_df.merge(event_times, on='event_id')
+    new_members_df = new_members_df.sort_values('start_datetime')
+    
+    # Plot ALL events with 5 bars
+    fig, ax = plt.subplots(figsize=(18, 8))
+    x = np.arange(len(new_members_df))
+    width = 0.16
+    
+    bars1 = ax.bar(x - 2*width, new_members_df['total_rsvps'], width, label='Total RSVPs', color='lightcoral')
+    bars2 = ax.bar(x - width, new_members_df['total_attendees'], width, label='Total Attendees', color='steelblue')
+    bars3 = ax.bar(x, new_members_df['new_members'], width, label='New Attendees (First-time)', color='lightgreen')
+    bars4 = ax.bar(x + width, new_members_df['first_rsvp_no_attend'], width, label='First RSVP (No Show)', color='lightblue')
+    bars5 = ax.bar(x + 2*width, new_members_df['first_rsvp_returned'], width, label='First RSVP → Later Attended', color='lightsalmon')
+    
+    ax.set_xlabel('Event')
+    ax.set_ylabel('Number of People')
+    ax.set_title('All Events: RSVP, Attendance & First-Timer Patterns')
+    ax.set_xticks(x)
+    ax.set_xticklabels(new_members_df['event_name'], rotation=75, ha='right', fontsize=8)
+    ax.legend()
+    
+    # Add value labels (only for bars > 0 to avoid clutter)
+    for bars in [bars1, bars2, bars3, bars4, bars5]:
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{int(height)}', ha='center', va='bottom', fontsize=6)
+    
     plt.tight_layout()
-
-    fp = outdir / "post_party_three_bars.png"
-    plt.savefig(fp, dpi=150)
+    plt.savefig(outdir / 'new_members_by_event.png', dpi=150, bbox_inches='tight')
     plt.close()
-    return fp
-
-
-def plot_new_members_by_type(by_type_returns, outdir):
-    """Grouped bars per category: New members, Returned 1x, Returned 2x, Returned 3+x."""
-    dfp = by_type_returns.copy()
-    labels = dfp["category"].fillna("Unknown").tolist()
-    nm = dfp["new_members"].astype(int).tolist()
-    r1 = dfp["returned_1"].astype(int).tolist()
-    r2 = dfp["returned_2"].astype(int).tolist()
-    r3p = dfp["returned_3plus"].astype(int).tolist()
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    _grouped_bar(
-        ax,
-        labels,
-        [nm, r1, r2, r3p],
-        ["New members", "Returned 1x", "Returned 2x", "Returned 3+"],
-        width=0.2,
-        rotate=45,
-    )
-    ax.set_ylabel("People (count)")
-    ax.set_title("New Members by Event Type with Return Buckets")
-    fig.tight_layout()
-
-    fp = outdir / "new_members_by_type.png"
-    fig.savefig(fp, dpi=150)
-    plt.close(fig)
-    return fp
-
-
-# -------------------- RSVP to Attendance Histogram --------------------
-
-def compute_attendance_per_person(att):
-    """Compute number of total attendances per person who RSVPed (integer >= 0)."""
-    # Start with people who RSVPed
-    rsvped = att[att["rsvp"] == True].copy()
     
-    # Count attendances (checked_in = True) per person
-    attended_counts = rsvped[rsvped["checked_in"] == True].groupby("person_id").size().reset_index(name="n_attendances")
+    plt.tight_layout()
+    plt.savefig(outdir / 'new_members_by_event.png', dpi=150, bbox_inches='tight')
+    plt.close()
     
-    # Get all people who RSVPed (to include 0-attendance people)
-    all_rsvped = rsvped[["person_id"]].drop_duplicates()
+    # New attendees by category with RSVP tracking
+    category_stats = master[master['is_first_attendance']].groupby('category').agg({
+        'person_id': 'count'
+    }).reset_index()
+    category_stats.columns = ['category', 'new_members']  # Keep column name for consistency
     
-    # Merge to include people with 0 attendances
-    attendance_counts = all_rsvped.merge(attended_counts, on="person_id", how="left").fillna({"n_attendances": 0})
-    attendance_counts["n_attendances"] = attendance_counts["n_attendances"].astype(int)
+    # First RSVPs (no attend) by category
+    first_rsvp_cat = master[(master['is_first_rsvp']) & (~master['checked_in'])].copy()
     
-    return attendance_counts
+    category_data = []
+    for category in master['category'].unique():
+        # First-time attendees
+        cat_first_timers = master[(master['is_first_attendance']) & (master['category'] == category)]['person_id'].unique()
+        
+        # First-time RSVPs (no show)
+        cat_first_rsvp = first_rsvp_cat[first_rsvp_cat['category'] == category]['person_id'].unique()
+        
+        # Count returns for attendees
+        attendee_returns = []
+        for person in cat_first_timers:
+            first_time = master[
+                (master['person_id'] == person) & 
+                (master['is_first_attendance'])
+            ]['start_datetime'].iloc[0]
+            
+            returns = master[
+                (master['person_id'] == person) & 
+                (master['checked_in']) & 
+                (master['start_datetime'] > first_time)
+            ].shape[0]
+            
+            attendee_returns.append(returns)
+        
+        # Count if RSVPers ever attended later
+        rsvp_returned_count = 0
+        for person in cat_first_rsvp:
+            first_rsvp_time = master[
+                (master['person_id'] == person) & 
+                (master['is_first_rsvp'])
+            ]['start_datetime'].iloc[0]
+            
+            later_attended = master[
+                (master['person_id'] == person) & 
+                (master['checked_in']) & 
+                (master['start_datetime'] > first_rsvp_time)
+            ].shape[0]
+            
+            if later_attended > 0:
+                rsvp_returned_count += 1
+        
+        category_data.append({
+            'category': category,
+            'new_members': len(cat_first_timers),  # Keep as new_members for consistency in variable names
+            'returned_1x': sum(1 for r in attendee_returns if r == 1),
+            'returned_2x': sum(1 for r in attendee_returns if r == 2),
+            'returned_3plus': sum(1 for r in attendee_returns if r >= 3),
+            'first_rsvp_no_show': len(cat_first_rsvp),
+            'first_rsvp_returned': rsvp_returned_count
+        })
+    
+    category_returns_df = pd.DataFrame(category_data).sort_values('new_members', ascending=False)
+    
+    # Plot category returns with 6 bars
+    fig, ax = plt.subplots(figsize=(14, 7))
+    categories = category_returns_df['category']
+    x = np.arange(len(categories))
+    width = 0.14
+    
+    bars1 = ax.bar(x - 2.5*width, category_returns_df['new_members'], width, label='New Attendees', color='steelblue')
+    bars2 = ax.bar(x - 1.5*width, category_returns_df['returned_1x'], width, label='Returned 1x', color='lightgreen')
+    bars3 = ax.bar(x - 0.5*width, category_returns_df['returned_2x'], width, label='Returned 2x', color='gold')
+    bars4 = ax.bar(x + 0.5*width, category_returns_df['returned_3plus'], width, label='Returned 3+', color='coral')
+    bars5 = ax.bar(x + 1.5*width, category_returns_df['first_rsvp_no_show'], width, label='First RSVP (No Show)', color='lightblue')
+    bars6 = ax.bar(x + 2.5*width, category_returns_df['first_rsvp_returned'], width, label='First RSVP → Later Attended', color='lightsalmon')
+    
+    ax.set_xlabel('Event Category')
+    ax.set_ylabel('Number of People')
+    ax.set_title('New Attendees by Category: Attendance & RSVP Patterns')
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, rotation=45, ha='right')
+    ax.legend(loc='upper right', ncol=2)
+    
+    plt.tight_layout()
+    plt.savefig(outdir / 'new_members_by_category.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    return new_members_df, category_returns_df
 
+def party_analysis(master, events, outdir):
+    """Analyze the big parties specifically, including first-time RSVP patterns."""
+    
+    # Identify parties (case-insensitive matching)
+    party_names = ['launch', 'sababa nights', 'bsmnt', 'fall 2025']
+    party_events = []
+    
+    for _, event in events.iterrows():
+        event_name_lower = str(event['event_name']).lower()
+        for party_name in party_names:
+            if party_name in event_name_lower:
+                party_events.append(event['id'])
+                break
+    
+    party_data = []
+    for event_id in party_events:
+        event_info = events[events['id'] == event_id].iloc[0]
+        event_time = event_info['start_datetime']
+        
+        # Total RSVPs
+        total_rsvps = master[(master['event_id'] == event_id) & (master['rsvp'])]['person_id'].nunique()
+        
+        # Total attendees
+        total = master[(master['event_id'] == event_id) & (master['checked_in'])]['person_id'].nunique()
+        
+        # First-timers (attended)
+        first_timers = master[
+            (master['event_id'] == event_id) & 
+            (master['checked_in']) & 
+            (master['is_first_attendance'])
+        ]['person_id'].unique()
+        
+        # First-timers who returned
+        returned = master[
+            (master['person_id'].isin(first_timers)) & 
+            (master['checked_in']) & 
+            (master['start_datetime'] > event_time)
+        ]['person_id'].nunique()
+        
+        # First RSVPs (no show)
+        first_rsvp_no_show = master[
+            (master['event_id'] == event_id) & 
+            (master['is_first_rsvp']) & 
+            (~master['checked_in'])
+        ]['person_id'].unique()
+        
+        # First RSVPs who later attended
+        first_rsvp_returned = master[
+            (master['person_id'].isin(first_rsvp_no_show)) & 
+            (master['checked_in']) & 
+            (master['start_datetime'] > event_time)
+        ]['person_id'].nunique()
+        
+        party_data.append({
+            'event_name': event_info['event_name'],
+            'event_time': event_time,
+            'total_rsvps': total_rsvps,
+            'total_attendees': total,
+            'first_timers': len(first_timers),
+            'first_timers_returned': returned,
+            'first_rsvp_no_show': len(first_rsvp_no_show),
+            'first_rsvp_returned': first_rsvp_returned,
+            'retention_rate': returned / len(first_timers) if len(first_timers) > 0 else 0
+        })
+    
+    party_df = pd.DataFrame(party_data).sort_values('event_time')
+    
+    # Plot party funnel with 6 bars
+    fig, ax = plt.subplots(figsize=(14, 7))
+    parties = party_df['event_name']
+    x = np.arange(len(parties))
+    width = 0.14
+    
+    bars1 = ax.bar(x - 2.5*width, party_df['total_rsvps'], width, label='Total RSVPs', color='lightcoral')
+    bars2 = ax.bar(x - 1.5*width, party_df['total_attendees'], width, label='Total Attendees', color='steelblue')
+    bars3 = ax.bar(x - 0.5*width, party_df['first_timers'], width, label='First-Time Attendees', color='lightgreen')
+    bars4 = ax.bar(x + 0.5*width, party_df['first_timers_returned'], width, label='First-Timers Who Returned', color='darkgreen')
+    bars5 = ax.bar(x + 1.5*width, party_df['first_rsvp_no_show'], width, label='First RSVP (No Show)', color='lightblue')
+    bars6 = ax.bar(x + 2.5*width, party_df['first_rsvp_returned'], width, label='First RSVP → Later Attended', color='lightsalmon')
+    
+    ax.set_xlabel('Party')
+    ax.set_ylabel('Number of People')
+    ax.set_title('Party Funnel: RSVP, Attendance & First-Timer Patterns')
+    ax.set_xticks(x)
+    ax.set_xticklabels(parties, rotation=45, ha='right')
+    ax.legend(loc='upper left', ncol=2)
+    
+    # Add value labels
+    for bars in [bars1, bars2, bars3, bars4, bars5, bars6]:
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{int(height)}', ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(outdir / 'party_funnel.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    return party_df
 
-def plot_attendance_histogram(attendance_df, outdir):
-    """Plot histogram (discrete) of attendance counts across all people who RSVPed, with bar labels."""
-    max_att = int(attendance_df["n_attendances"].max()) if not attendance_df.empty else 0
-    xs = np.arange(0, max_att + 1)
-    counts = attendance_df["n_attendances"].value_counts().sort_index()
-    ys = [int(counts.get(i, 0)) for i in xs]
+def rsvp_conversion_analysis(master, outdir):
+    """Analyze RSVP to attendance conversion - both overall and excluding parties."""
+    
+    # Version 1: All events
+    # Get all people who ever RSVPed
+    rsvp_people = master[master['rsvp']]['person_id'].unique()
+    
+    # Count how many events each person attended
+    attendance_counts = []
+    for person in rsvp_people:
+        n_attended = master[
+            (master['person_id'] == person) & 
+            (master['checked_in'])
+        ]['event_id'].nunique()
+        attendance_counts.append(n_attended)
+    
+    # Create histogram data
+    max_count = max(attendance_counts) if attendance_counts else 0
+    hist_data = pd.Series(attendance_counts).value_counts().sort_index()
+    
+    # Plot histogram - ALL events
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # First subplot: All events
+    x = list(range(0, max_count + 1))
+    y = [hist_data.get(i, 0) for i in x]
+    
+    bars1 = ax1.bar(x, y, color='steelblue', edgecolor='black')
+    
+    # Add value labels on bars
+    for bar, val in zip(bars1, y):
+        if val > 0:
+            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height(),
+                   f'{int(val)}', ha='center', va='bottom')
+    
+    ax1.set_xlabel('Number of Events Attended')
+    ax1.set_ylabel('Number of People')
+    ax1.set_title(f'RSVP to Attendance (All Events)\n{len(rsvp_people):,} Unique RSVPs | {sum(1 for c in attendance_counts if c > 0):,} Unique Attendees')
+    ax1.set_xticks(x)
+    
+    # Add explanatory text
+    ax1.text(0.02, 0.95, 
+           '0 = RSVPed but never attended\n1+ = Number of events attended', 
+           transform=ax1.transAxes, 
+           verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    
+    # Version 2: Excluding party category
+    # Get all people who RSVPed to non-party events
+    non_party_rsvps = master[(master['rsvp']) & (master['category'] != 'party')]
+    rsvp_people_no_party = non_party_rsvps['person_id'].unique()
+    
+    # Count how many non-party events each person attended
+    attendance_counts_no_party = []
+    for person in rsvp_people_no_party:
+        n_attended = master[
+            (master['person_id'] == person) & 
+            (master['checked_in']) & 
+            (master['category'] != 'party')
+        ]['event_id'].nunique()
+        attendance_counts_no_party.append(n_attended)
+    
+    # Create histogram data for non-party
+    max_count_no_party = max(attendance_counts_no_party) if attendance_counts_no_party else 0
+    hist_data_no_party = pd.Series(attendance_counts_no_party).value_counts().sort_index()
+    
+    # Second subplot: Excluding parties
+    x2 = list(range(0, max_count_no_party + 1))
+    y2 = [hist_data_no_party.get(i, 0) for i in x2]
+    
+    bars2 = ax2.bar(x2, y2, color='darkgreen', edgecolor='black')
+    
+    # Add value labels on bars
+    for bar, val in zip(bars2, y2):
+        if val > 0:
+            ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height(),
+                   f'{int(val)}', ha='center', va='bottom')
+    
+    ax2.set_xlabel('Number of Events Attended')
+    ax2.set_ylabel('Number of People')
+    ax2.set_title(f'RSVP to Attendance (Excluding Parties)\n{len(rsvp_people_no_party):,} Unique RSVPs | {sum(1 for c in attendance_counts_no_party if c > 0):,} Unique Attendees')
+    ax2.set_xticks(x2)
+    
+    # Add explanatory text
+    ax2.text(0.02, 0.95, 
+           '0 = RSVPed but never attended\n1+ = Number of events attended\n(Party events excluded)', 
+           transform=ax2.transAxes, 
+           verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(outdir / 'rsvp_conversion.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Return summary stats for all events
+    conversion_stats = pd.DataFrame({
+        'events_attended': x,
+        'people_count': y
+    })
+    
+    return conversion_stats
 
-    total_rsvps = sum(ys)
-    total_attendees = sum(ys[1:])
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.bar(xs, ys)
-    ax.set_xlabel("Number of events attended")
-    ax.set_ylabel("People (count)")
-    ax.set_title(f"RSVP to Attendance Conversion — N={total_rsvps:,} total RSVPs - N={total_attendees:,} total Attending Members")
-    ax.set_xticks(xs)
-
-    # Label each bar with its count
-    try:
-        # Matplotlib >= 3.4
-        ax.bar_label(bars, padding=3, fmt='%.0f')
-    except Exception:
-        # Fallback for older Matplotlib
-        for rect in bars:
-            height = rect.get_height()
-            ax.text(
-                rect.get_x() + rect.get_width() / 2.0,
-                height,
-                f"{int(height)}",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-
-    # Add note about 0 column
-    ax.text(0.02, 0.95, 
-            "0 = RSVPed but never attended\n1+ = Number of events attended", 
-            transform=ax.transAxes, 
-            verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-
-    fig.tight_layout()
-
-    fp = outdir / "rsvp_attendance_histogram.png"
-    fig.savefig(fp, dpi=150)
-    plt.close(fig)
-    return fp
-
-# -------------------- Main --------------------
+def generate_summary_stats(master, outdir):
+    """Generate overall summary statistics."""
+    
+    stats = {
+        'Total Unique People': master['person_id'].nunique(),
+        'Total Events': master['event_id'].nunique(),
+        'Total RSVPs': master[master['rsvp']].shape[0],
+        'Total Attendances': master[master['checked_in']].shape[0],
+        'Unique People Who RSVPed': master[master['rsvp']]['person_id'].nunique(),
+        'Unique People Who Attended': master[master['checked_in']]['person_id'].nunique(),
+        'Overall RSVP→Attendance Rate': master[master['checked_in']].shape[0] / master[master['rsvp']].shape[0] if master[master['rsvp']].shape[0] > 0 else 0,
+        'Avg Events per Attendee': master[master['checked_in']].groupby('person_id')['event_id'].nunique().mean()
+    }
+    
+    # Demographics of attendees
+    attendees = master[master['checked_in']].drop_duplicates('person_id')
+    stats['% Jewish Attendees'] = (attendees['is_jewish'] == 'J').mean() * 100 if 'is_jewish' in attendees.columns else None
+    stats['% Female Attendees'] = (attendees['gender'] == 'F').mean() * 100 if 'gender' in attendees.columns else None
+    
+    # Save stats
+    stats_df = pd.DataFrame([stats]).T
+    stats_df.columns = ['Value']
+    stats_df.to_csv(outdir / 'summary_stats.csv')
+    
+    print("\n=== SUMMARY STATISTICS ===")
+    for key, value in stats.items():
+        if value is not None:
+            if '%' in key or 'Rate' in key:
+                print(f"{key}: {value:.1f}%")
+            elif 'Avg' in key:
+                print(f"{key}: {value:.2f}")
+            else:
+                print(f"{key}: {int(value):,}")
+    
+    return stats_df
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--attendance", default="final/attendance.csv")
-    p.add_argument("--events", default="final/events.csv")
-    p.add_argument("--people", default="final/people.csv")
-    p.add_argument("--invite_tokens", default=None)
-    p.add_argument("--outdir", default="analysis_outputs")
-    args = p.parse_args()
-
+    parser = argparse.ArgumentParser(description='Event Analytics Script')
+    parser.add_argument('--attendance', default='final/attendance.csv', help='Path to attendance CSV')
+    parser.add_argument('--events', default='final/events.csv', help='Path to events CSV')
+    parser.add_argument('--people', default='final/people.csv', help='Path to people CSV')
+    parser.add_argument('--outdir', default='analysis_outputs', help='Output directory')
+    args = parser.parse_args()
+    
+    # Create output directory
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-
-    attendance, events, people, invite_tokens = load_data(
-        args.attendance, args.events, args.people, args.invite_tokens
-    )
-    att, events = prep_master(attendance, events, people)
-    att, first_events, attended = recompute_first_events(att)
-
-    # 1) Retention by event (now two bars per event)
-    retention_df = retention_by_event(events, attended)
-    plot_retention_by_event(retention_df, outdir)
-
-    # 2) Post-party retention
-    party_conv_df = post_party_retention(events, first_events, attended)
-    plot_post_party(party_conv_df, outdir)
-
-    # 3) New members
-    new_by_event, new_by_type, by_type_returns = new_members_tables(first_events, events, attended)
-
-    # 3b) RSVP to Attendance histogram
-    attendance_counts_df = compute_attendance_per_person(att)
-    hist_counts = attendance_counts_df["n_attendances"].value_counts().sort_index().reset_index()
-    hist_counts.columns = ["n_attendances", "people_count"]
     
-    plot_attendance_histogram(attendance_counts_df, outdir)
-    plot_new_members_by_event(new_by_event, outdir)
-    plot_new_members_by_type(by_type_returns, outdir)
-
-    # 5) Attendance counts for big parties
-    party_counts = party_attendance_counts(events, attended)
-
-    # Party funnel 3-bar chart
-    plot_post_party_three_bars(party_conv_df, party_counts, outdir)
-
-    # 6) Approval loss analysis
-    approval_df = approval_loss(att, attended)
+    print("Loading and merging data...")
+    master, events = create_master_dataset(args.attendance, args.events, args.people)
     
+    print(f"Master dataset created: {len(master)} rows, {master['person_id'].nunique()} unique people, {master['event_id'].nunique()} events")
+    
+    print("\nRunning analyses...")
+    
+    # 1. Retention analysis
+    print("1. Analyzing retention by event...")
+    retention_df = retention_analysis(master, events, outdir)
+    
+    # 2. New attendees analysis
+    print("2. Analyzing new attendees...")
+    new_by_event, new_by_category = new_members_analysis(master, events, outdir)
+    
+    # 3. Party analysis
+    print("3. Analyzing big parties...")
+    party_df = party_analysis(master, events, outdir)
+    
+    # 4. RSVP conversion (two versions)
+    print("4. Analyzing RSVP conversion...")
+    conversion_stats = rsvp_conversion_analysis(master, outdir)
+    
+    # 5. Generate summary stats
+    print("5. Generating summary statistics...")
+    summary_stats = generate_summary_stats(master, outdir)
+    
+    print(f"\n✅ Analysis complete! All outputs saved to: {outdir.resolve()}")
+    print("\nGenerated files:")
+    for file in sorted(outdir.glob('*')):
+        print(f"  - {file.name}")
 
-    print("Done! Results written to:", outdir.resolve())
-    print(f"Generated RSVP to Attendance histogram with {len(attendance_counts_df)} total RSVPs")
-    print(f"No-shows (0 attendances): {(attendance_counts_df['n_attendances'] == 0).sum()}")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
