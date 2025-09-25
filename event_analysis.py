@@ -210,10 +210,6 @@ def new_members_analysis(master, events, outdir):
     plt.savefig(outdir / 'new_members_by_event.png', dpi=150, bbox_inches='tight')
     plt.close()
     
-    plt.tight_layout()
-    plt.savefig(outdir / 'new_members_by_event.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    
     # New attendees by category with RSVP tracking
     category_stats = master[master['is_first_attendance']].groupby('category').agg({
         'person_id': 'count'
