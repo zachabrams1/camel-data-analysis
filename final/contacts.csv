@@ -3455,3 +3455,232 @@ id,person_id,contact_type,contact_value,is_verified
 3454,1940,phone,13102666788.0,False
 3455,1941,school email,karimmasri@college.harvard.edu,False
 3456,1941,phone,16172122733.0,False
+3457,1256,school email,jav2193@columbia.edu,False
+3458,962,school email,cgoodman@mba2026.hbs.edu,False
+3459,962,phone,19789738038.0,False
+3460,1864,school email,leonardbouffier@college.harvard.edu,False
+3461,633,school email,rmorrison6@berklee.edu,False
+3462,633,phone,16318273069.0,False
+3463,1942,school email,rquinn1@mit.edu,False
+3464,1942,phone,13154096192.0,False
+3465,971,school email,jbergstrom@college.harvard.edu,False
+3466,1943,school email,rickyang@college.harvard.edu,False
+3467,1943,personal email,rickyang11109@gmail.com,False
+3468,1943,phone,19144335054.0,False
+3469,1721,school email,jpaul@college.harvard.edu,False
+3470,881,school email,sambernbaum@college.harvard.edu,False
+3471,1839,school email,jesusbarrios@college.harvard.edu,False
+3472,122,phone,18578290485.0,False
+3473,1860,school email,lara_rieger@college.harvard.edu,False
+3474,4,phone,16172518316.0,False
+3475,1783,school email,gpellino@college.harvard.edu,False
+3476,1783,phone,18573318616.0,False
+3477,1321,school email,mfriedman@college.harvard.edu,False
+3478,1831,school email,simonfarruqui@college.harvard.edu,False
+3479,943,phone,18184332242.0,False
+3480,524,school email,rbungabong@college.harvard.edu,False
+3481,524,phone,16178991061.0,False
+3482,1411,school email,ksbansal@mit.edu,False
+3483,1871,school email,mana_g@mit.edu,False
+3484,1763,school email,ashermeron@college.harvard.edu,False
+3485,1316,school email,melaniegoldberg@college.harvard.edu,False
+3486,1408,school email,fabiofabbiani@college.harvard.edu,False
+3487,1773,school email,sophiakruger@college.harvard.edu,False
+3488,511,school email,femiositade@college.harvard.edu,False
+3489,1324,school email,aviyamadar@college.harvard.edu,False
+3490,1310,school email,adashevs@mit.edu,False
+3491,1782,school email,danielpesin@college.harvard.edu,False
+3492,946,school email,mhirschfeld@jd27.law.harvard.edu,False
+3493,946,phone,19179302627.0,False
+3494,1944,school email,tresfrisard@college.harvard.edu,False
+3495,1944,personal email,3midfield@gmail.com,False
+3496,1944,phone,17049625213.0,False
+3497,1609,school email,samaymirpuri@college.harvard.edu,False
+3498,195,phone,14159881255.0,False
+3499,1602,school email,finan_gammell@college.harvard.edu,False
+3500,1945,school email,lhennes@college.harvard.edu,False
+3501,1945,personal email,logannhennes@gmail.com,False
+3502,1945,phone,19176970570.0,False
+3503,1946,school email,yashvirsabharwal@college.harvard.edu,False
+3504,1946,phone,15716626970.0,False
+3505,697,phone,18573529249.0,False
+3506,1947,school email,faithade@mit.edu,False
+3507,1947,personal email,odunsifaith2@gmail.com,False
+3508,1947,phone,19787705990.0,False
+3509,1915,school email,mahran@hillel.harvard.edu,False
+3510,558,phone,16302805288.0,False
+3511,97,phone,16508043325.0,False
+3512,1948,school email,radhik_wickramasinghe@college.harvard.edu,False
+3513,1948,phone,18133355333.0,False
+3514,1949,school email,oleksandr_yelovets@college.harvard.edu,False
+3515,1949,phone,18573318572.0,False
+3516,1475,school email,kmflower@mit.edu,False
+3517,1950,school email,jmassoud@mba2026.hbs.edu,False
+3518,1950,personal email,massoud.jordan@gmail.com,False
+3519,1950,phone,15704285994.0,False
+3520,1951,school email,lukh23@mit.edu,False
+3521,1951,phone,12038327690.0,False
+3522,1247,school email,clementinasorzana@college.harvard.edu,False
+3523,1952,school email,ido12@mit.edu,False
+3524,1952,personal email,levyido12@gmail.com,False
+3525,1952,phone,14254060638.0,False
+3526,525,phone,19098707606.0,False
+3527,732,school email,connorkim@college.harvard.edu,False
+3528,732,phone,19175753253.0,False
+3529,1953,school email,jonathanlei@college.harvard.edu,False
+3530,1953,personal email,jonathanlei2005@gmail.com,False
+3531,1953,phone,19783936962.0,False
+3532,1322,school email,jwiczyk@college.harvard.edu,False
+3533,1954,school email,jwaldorf@college.harvard.edu,False
+3534,1954,personal email,jonathanwaldorf05@gmail.com,False
+3535,1954,phone,19177491118.0,False
+3536,1890,school email,zacharyfgordon@gmail.com,False
+3537,1955,personal email,yuvalpadel0@gmail.com,False
+3538,1955,phone,19297399238.0,False
+3539,1956,school email,coheneinav9@gmail.com,False
+3540,1956,phone,19544013622.0,False
+3541,952,school email,dslee@college.harvard.edu,False
+3542,1309,school email,garrickschwartz@college.harvard.edu,False
+3543,328,school email,jessiewang@college.harvard.edu,False
+3544,328,phone,18577069461.0,False
+3545,1777,school email,teiyoonkim@college.harvard.edu,False
+3546,1957,school email,swarman@mit.edu,False
+3547,1957,personal email,skxwarman@gmail.com,False
+3548,1957,phone,16503138700.0,False
+3549,361,phone,19723227501.0,False
+3550,931,phone,16173085708.0,False
+3551,996,phone,16462484815.0,False
+3552,1958,school email,arjun_narasimhan@college.harvard.edu,False
+3553,1958,phone,18577778533.0,False
+3554,1753,school email,mdangond@college.harvard.edu,False
+3555,1959,school email,usandivaras@college.harvard.edu,False
+3556,1959,phone,19292402437.0,False
+3557,1960,school email,madisonwaliapeters@college.harvard.edu,False
+3558,1960,personal email,madisonwaliapeters@gmail.com,False
+3559,1960,phone,12016545536.0,False
+3560,1961,school email,dsingh@college.harvard.edu,False
+3561,1961,personal email,dilzafer.singh@gmail.com,False
+3562,1961,phone,17745598587.0,False
+3563,1962,school email,wremy@college.harvard.edu,False
+3564,1962,phone,17743601189.0,False
+3565,69,phone,16172515262.0,False
+3566,1963,school email,goetz17@mit.edu,False
+3567,1963,personal email,goetzcharlie@gmail.com,False
+3568,1963,phone,13104608141.0,False
+3569,494,phone,18186218111.0,False
+3570,1964,school email,ninan154@mit.edu,False
+3571,1964,phone,12407600822.0,False
+3572,1791,school email,ameliasipkin@college.harvard.edu,False
+3573,1638,school email,najmanmahbouba@college.harvard.edu,False
+3574,1614,school email,edouardlembrez@college.harvard.edu,False
+3575,1965,school email,snimmagadda@mba2026.hbs.edu,False
+3576,1965,phone,14257857399.0,False
+3577,1876,school email,nzyzen@college.harvard.edu,False
+3578,1966,school email,andysheng@college.harvard.edu,False
+3579,1966,personal email,andysheng16@gmail.com,False
+3580,1966,phone,12058990018.0,False
+3581,1874,school email,francesconappi@college.harvard.edu,False
+3582,1967,school email,bsuri@mba2027.hbs.edu,False
+3583,1967,phone,18184556470.0,False
+3584,1968,school email,raadhaypatel@college.harvard.edu,False
+3585,1968,phone,15089911603.0,False
+3586,1515,school email,phananhle@college.harvard.edu,False
+3587,1654,school email,isila@mit.edu,False
+3588,1886,school email,ans7@mit.edu,False
+3589,1312,school email,ergross@mit.edu,False
+3590,1743,school email,guy_almoznino@college.harvard.edu,False
+3591,1969,school email,praneelkhiantani@harvard.college.edu,False
+3592,1969,personal email,praneel2nd@gmail.com,False
+3593,1969,phone,15518889169.0,False
+3594,1566,school email,alshehab.a@northeastern.edu,False
+3595,1970,personal email,jeffreytingrui@gmail.com,False
+3596,1970,phone,16783166136.0,False
+3597,608,school email,alal@college.harvard.edu,False
+3598,573,school email,lpark1@college.harvard.edu,False
+3599,1971,school email,beatriz_abram@college.harvard.edu,False
+3600,1971,phone,16179391209.0,False
+3601,1717,school email,tburstein@college.harvard.edu,False
+3602,1882,school email,yehoshua@mit.edu,False
+3603,1422,school email,maryxie@mit.edu,False
+3604,1358,school email,eamongordon@college.harvard.edu,False
+3605,1589,school email,melissali1@college.harvard.edu,False
+3606,723,school email,regancar@merrimack.edu,False
+3607,1972,school email,matthewchang@college.harvard.edu,False
+3608,1972,personal email,matthewchang1219@gmail.com,False
+3609,1972,phone,19493396957.0,False
+3610,1928,school email,gabrielabrams@college.harvard.edu,False
+3611,1594,school email,aganjikunta@college.harvard.edu,False
+3612,1973,school email,airavul@college.harvard.edu,False
+3613,1973,phone,16172017016.0,False
+3614,1179,school email,gpelenur@college.harvard.edu,False
+3615,1179,phone,16172514340.0,False
+3616,1974,school email,galfran24@gmail.com,False
+3617,1974,phone,972545218360.0,False
+3618,1975,school email,eric@lowercarbon.com,False
+3619,1975,personal email,ehhelfgott@gmail.com,False
+3620,1975,phone,19178874467.0,False
+3621,1976,school email,ninajanmyr@college.harvard.edu,False
+3622,1976,phone,16172513828.0,False
+3623,1977,school email,michal_husek@college.harvard.edu,False
+3624,1977,phone,18579289464.0,False
+3625,156,phone,18577069993.0,False
+3626,1978,school email,phoebetian@college.harvard.edu,False
+3627,1978,personal email,phoebeytian@gmail.com,False
+3628,1978,phone,16174156792.0,False
+3629,1979,school email,cgonzalez1@college.harvard.edu,False
+3630,1979,personal email,goco4410@gmail.com,False
+3631,1979,phone,19803377090.0,False
+3632,1980,school email,isaiahkacyvenski@college.harvard.edu,False
+3633,1980,phone,16174597321.0,False
+3634,1981,school email,luluaugust@college.harvard.edu,False
+3635,1981,personal email,lulujna@gmail.com,False
+3636,1981,phone,19172856387.0,False
+3637,1233,personal email,derekmarshall565@gmail.com,False
+3638,1233,phone,17814913906.0,False
+3639,1547,school email,taylorchon@college.harvard.edu,False
+3640,1982,school email,mamusateguigarciaperi@mba2026.hbs.edu,False
+3641,1982,personal email,mariluz.amusategui@gmail.com,False
+3642,1982,phone,12673421512.0,False
+3643,1983,school email,clee0444@mit.edu,False
+3644,1983,personal email,clee0444@gmail.com,False
+3645,1983,phone,16172164340.0,False
+3646,1716,school email,awagner@college.harvard.edu,False
+3647,1984,school email,ezekielwells@college.harvard.edu,False
+3648,1984,personal email,ezekielawells@gmail.com,False
+3649,1984,phone,17082982847.0,False
+3650,1985,school email,thinhph@mit.edu,False
+3651,1985,personal email,thinhpham6824@gmail.com,False
+3652,1985,phone,18329416863.0,False
+3653,1986,school email,avastone@college.harvard.edu,False
+3654,1986,personal email,avstone2526@gmail.com,False
+3655,1986,phone,12035248211.0,False
+3656,1987,school email,wbuehler@college.harvard.edu,False
+3657,1987,phone,12035611801.0,False
+3658,1988,school email,aprocopio@fas.harvard.edu,False
+3659,1988,personal email,ap.andreaprocopio@gmail.com,False
+3660,1988,phone,16173889253.0,False
+3661,1989,school email,sssahil@mit.edu,False
+3662,1989,personal email,salihnursahil@gmail.com,False
+3663,1989,phone,14752577623.0,False
+3664,1990,school email,lpitombosantosmoreno@college.harvard.edu,False
+3665,1990,personal email,lucaspsmoreno@gmail.com,False
+3666,1990,phone,18578298023.0,False
+3667,1991,school email,samaira.banga@tufts.edu,False
+3668,1991,personal email,samairabanga5@gmail.com,False
+3669,1991,phone,918826900523.0,False
+3670,1769,school email,lishalovely@college.harvard.edu,False
+3671,1992,school email,msandhu@college.harvard.edu,False
+3672,1992,phone,19374512322.0,False
+3673,1249,school email,katherrinbillordo@college.harvard.edu,False
+3674,1304,school email,brishika@mit.edu,False
+3675,1993,school email,inseoyeo@college.harvard.edu,False
+3676,1993,phone,16172518475.0,False
+3677,1994,school email,openi.oni@tufts.edu,False
+3678,1994,personal email,christinopeni@gmail.com,False
+3679,1994,phone,15704603319.0,False
+3680,1995,school email,isaac_pachecomartinez@harvard.college.edu,False
+3681,1995,personal email,ip729609@gmail.com,False
+3682,1995,phone,15304074967.0,False
+3683,1996,school email,uzi@hillel.harvard.edu,False
+3684,1996,phone,12152377580.0,False
+3685,1757,school email,joshuagupta@college.harvard.edu,False
