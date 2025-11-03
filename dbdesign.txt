@@ -1,0 +1,88 @@
+CREATE TABLE People (
+    id SERIAL PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    preferred_name VARCHAR(50),
+    gender CHAR(1),
+    class_year SMALLINT,                  
+    is_jewish BOOLEAN,                      
+    school VARCHAR(20),                      
+    additional_info JSON,
+
+    CHECK (gender IS NULL OR gender IN ('M', 'F', 'O')),
+    CHECK (school IS NULL OR school IN ('harvard', 'mit', 'other'))
+);
+
+CREATE TABLE Contacts (
+    id SERIAL PRIMARY KEY,
+    person_id INTEGER NOT NULL,
+    contact_type VARCHAR(20) NOT NULL,
+    contact_value VARCHAR(100) NOT NULL,
+    is_verified BOOLEAN NOT NULL,
+    CONSTRAINT fk_contacts_person
+        FOREIGN KEY (person_id) 
+        REFERENCES People(id)
+        ON DELETE CASCADE,
+    UNIQUE (person_id, contact_type, contact_value)
+    CHECK (contact_type IN ('school email', 'personal email', 'phone'))
+);
+
+CREATE TABLE Events (
+    id SERIAL PRIMARY KEY,
+    event_name VARCHAR(100) NOT NULL,
+    category VARCHAR(50),
+    location VARCHAR(100) NOT NULL,
+    start_datetime TIMESTAMP NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE Attendance (
+    id SERIAL PRIMARY KEY,
+    person_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    rsvp BOOLEAN NOT NULL,                      
+    approved BOOLEAN NOT NULL DEFAULT FALSE,
+    checked_in BOOLEAN NOT NULL DEFAULT FALSE,
+    rsvp_datetime TIMESTAMP,
+    is_first_event BOOLEAN NOT NULL DEFAULT FALSE,
+    invite_token_id INTEGER NOT NULL,
+
+    CONSTRAINT fk_attendance_person
+        FOREIGN KEY (person_id)
+        REFERENCES People(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_attendance_event
+        FOREIGN KEY (event_id)
+        REFERENCES Events(id)
+        ON DELETE CASCADE,
+    UNIQUE (person_id, event_id),
+    CONSTRAINT fk_invite_token
+        FOREIGN KEY (invite_token_id)
+        References InviteTokens(id)
+        ON DELETE CASCADE,
+);
+
+CREATE TABLE Expenses (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    amount NUMERIC(10, 2) NOT NULL,
+
+    CONSTRAINT fk_expenses_event
+        FOREIGN KEY (event_id)
+        REFERENCES Events(id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE InviteTokens (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    description TEXT,
+
+    CHECK(category IN ('personal outreach', 'mailing list', 'club collaboration')),
+    CONSTRAINT fk_event_id
+        FOREIGN KEY (event_id)
+        REFERENCES Events(id)
+        ON DELETE CASCADE
+);
