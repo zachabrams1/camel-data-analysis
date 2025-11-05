@@ -18,6 +18,10 @@ Usage:
 import psycopg2
 import argparse
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def detect_school_from_email(email):
