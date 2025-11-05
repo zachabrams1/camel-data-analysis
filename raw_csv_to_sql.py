@@ -1,0 +1,810 @@
+#!/usr/bin/env python3
+"""
+Import Event Data to PostgreSQL Database
+
+This script imports new event attendee data from CSV files into the PostgreSQL database.
+
+Usage:
+    python raw_csv_to_sql.py <csv_file_path>
+"""
+
+import sys
+import argparse
+import pandas as pd
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+import os
+from difflib import SequenceMatcher
+import re
+from datetime import datetime
+from pathlib import Path
+
+# Load environment variables
+load_dotenv()
+
+# Database connection parameters
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST'),
+    'port': os.getenv('DB_PORT', 58300),
+    'database': os.getenv('DB_NAME', 'postgres'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD')
+}
+
+def get_db_connection():
+    """Create a new database connection."""
+    return psycopg2.connect(**DB_CONFIG)
+
+# Import all helper functions from notebook
+def fuzzy_ratio(str_a, str_b):
+    return SequenceMatcher(None, str_a, str_b).ratio()
+
+def is_initial(name):
+    cleaned = name.strip().lower()
+    if len(cleaned) == 1 and cleaned.isalpha():
+        return True
+    if len(cleaned) == 2 and cleaned[0].isalpha() and cleaned[1] == ".":
+        return True
+    return False
+
+def compare_names(fn_ta, ln_ta, fn_sheet, ln_sheet, fuzzy_threshold):
+    """Compare two name pairs and return matching verdict."""
+    fn_ta = str(fn_ta) if pd.notna(fn_ta) else ""
+    ln_ta = str(ln_ta) if pd.notna(ln_ta) else ""
+    fn_sheet = str(fn_sheet) if pd.notna(fn_sheet) else ""
+    ln_sheet = str(ln_sheet) if pd.notna(ln_sheet) else ""
+
+    if fn_ta == fn_sheet and ln_ta == ln_sheet:
+        return "auto_accept"
+    if (fn_ta in fn_sheet and ln_sheet == ln_ta) or (fn_sheet in fn_ta and ln_ta == ln_sheet):
+        return "auto_accept"
+    if (fn_ta == fn_sheet and ln_ta in ln_sheet) or (fn_sheet == fn_ta and ln_sheet in ln_ta):
+        return "auto_accept"
+
+    fn_ta_is_initial = is_initial(fn_ta)
+    ln_ta_is_initial = is_initial(ln_ta)
+
+    if fn_ta_is_initial or ln_ta_is_initial:
+        if fn_ta_is_initial:
+            letter = fn_ta[0].lower()
+            if not fn_sheet.startswith(letter):
+                return "reject_now"
+        if ln_ta_is_initial:
+            letter = ln_ta[0].lower()
+            if not ln_sheet.startswith(letter):
+                return "reject_now"
+
+        if fn_ta_is_initial and not ln_ta_is_initial:
+            ratio_last = fuzzy_ratio(ln_ta, ln_sheet)
+            if ratio_last >= fuzzy_threshold:
+                return "manual_review"
+            else:
+                return "reject_now"
+        elif ln_ta_is_initial and not fn_ta_is_initial:
+            ratio_first = fuzzy_ratio(fn_ta, fn_sheet)
+            if ratio_first >= fuzzy_threshold:
+                return "manual_review"
+            else:
+                return "reject_now"
+        else:
+            return "manual_review"
+
+    exact_first = (fn_ta == fn_sheet)
+    exact_last = (ln_ta == ln_sheet)
+    ratio_first = fuzzy_ratio(fn_ta, fn_sheet)
+    ratio_last = fuzzy_ratio(ln_ta, ln_sheet)
+
+    if exact_first and ratio_last >= fuzzy_threshold:
+        print(f"Matching {fn_ta} {ln_ta} to {fn_sheet} {ln_sheet}")
+        return "auto_accept"
+    if exact_last and ratio_first >= fuzzy_threshold:
+        print(f"Matching {fn_ta} {ln_ta} to {fn_sheet} {ln_sheet}")
+        return "auto_accept"
+
+    if ratio_first >= fuzzy_threshold and ratio_last >= fuzzy_threshold:
+        return "manual_review"
+
+    return "reject_now"
+
+def update_names_if_substring(conn, person_id, sheet_first, sheet_last, input_first, input_last):
+    """Update first_name and last_name in database to the longer version if one is substring of other."""
+    if pd.isna(sheet_first) or not sheet_first:
+        sheet_first = ""
+    if pd.isna(input_first) or not input_first:
+        input_first = ""
+
+    updates = {}
+
+    if sheet_first.lower() in input_first.lower() or input_first.lower() in sheet_first.lower():
+        longer_first = max(sheet_first, input_first, key=len)
+        updates['first_name'] = longer_first
+
+    if pd.notna(sheet_last) and pd.notna(input_last):
+        if sheet_last.lower() in input_last.lower() or input_last.lower() in sheet_last.lower():
+            longer_last = max(sheet_last, input_last, key=len)
+            updates['last_name'] = longer_last
+
+    if updates:
+        with conn.cursor() as cur:
+            set_clause = ', '.join([f"{k} = %s" for k in updates.keys()])
+            values = list(updates.values()) + [person_id]
+            cur.execute(f"UPDATE People SET {set_clause} WHERE id = %s", values)
+        conn.commit()
+
+def find_person_id(row, conn, email_col=None, phone_col=None, handle_indices_list=None, fuzzy_threshold=0.80):
+    """Find person ID by email, phone, or name matching."""
+
+    first_name = row["first_name"].strip().lower() if not pd.isna(row["first_name"]) else None
+    last_name = row.get("last_name")
+    last_name = last_name.strip().lower() if pd.notna(last_name) else None
+
+    # Email matching
+    if email_col and email_col in row and pd.notna(row[email_col]):
+        email = row[email_col]
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT person_id FROM Contacts WHERE LOWER(contact_value) = LOWER(%s)",
+                (email,)
+            )
+            result = cur.fetchone()
+            if result:
+                person_id = result['person_id']
+                cur.execute("SELECT first_name, last_name FROM People WHERE id = %s", (person_id,))
+                person = cur.fetchone()
+                update_names_if_substring(conn, person_id, person['first_name'], person['last_name'], first_name, last_name)
+                return person_id
+        print(f"Could not find person with email: {email}")
+    else:
+        email = None
+
+    # Phone matching
+    if phone_col and phone_col in row and pd.notna(row[phone_col]):
+        phone = row[phone_col]
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT person_id FROM Contacts WHERE LOWER(contact_value) = LOWER(%s)",
+                (phone,)
+            )
+            result = cur.fetchone()
+            if result:
+                person_id = result['person_id']
+                cur.execute("SELECT first_name, last_name FROM People WHERE id = %s", (person_id,))
+                person = cur.fetchone()
+                update_names_if_substring(conn, person_id, person['first_name'], person['last_name'], first_name, last_name)
+                return person_id
+        print(f"Could not find person with phone: {phone}")
+
+    if not first_name:
+        return None
+
+    # Exact name matching
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        if last_name:
+            cur.execute(
+                "SELECT * FROM People WHERE LOWER(first_name) = %s AND LOWER(last_name) = %s",
+                (first_name, last_name)
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM People WHERE LOWER(first_name) = %s",
+                (first_name,)
+            )
+        potentials = cur.fetchall()
+
+    if len(potentials) == 1:
+        person = potentials[0]
+        update_names_if_substring(conn, person['id'], person['first_name'], person['last_name'], first_name, last_name)
+        return person['id']
+
+    elif len(potentials) > 1:
+        options = [
+            f"{i} => {p['first_name']} {p['last_name']} (gender={p['gender']}, jewish={p['is_jewish']})"
+            for i, p in enumerate(potentials)
+        ]
+        options_str = "\n".join(options)
+        choice = input(f"Multiple exact matches for '{first_name} {last_name or ''}' and email {email}. Choose one:\n\n{options_str}\n\nSelect index or 'n' to skip: ")
+        if choice.lower() == "n":
+            handle_indices_list.append((first_name, last_name))
+            return None
+        try:
+            selected = potentials[int(choice)]
+            person_id = selected['id']
+            update_names_if_substring(conn, person_id, selected['first_name'], selected['last_name'], first_name, last_name)
+            return person_id
+        except:
+            print("Invalid choice. Skipping.")
+            handle_indices_list.append((first_name, last_name))
+            return None
+
+    # Fuzzy matching
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM People")
+        all_people = cur.fetchall()
+
+    auto_accepts, manual_reviews = [], []
+    for candidate in all_people:
+        verdict = compare_names(
+            first_name,
+            (last_name or ""),
+            candidate["first_name"],
+            candidate["last_name"] if candidate["last_name"] else "",
+            fuzzy_threshold,
+        )
+        if verdict == "auto_accept":
+            auto_accepts.append(candidate)
+        elif verdict == "manual_review":
+            manual_reviews.append(candidate)
+
+    if len(auto_accepts) == 1:
+        person = auto_accepts[0]
+        update_names_if_substring(conn, person['id'], person['first_name'], person['last_name'], first_name, last_name)
+        return person['id']
+
+    if len(auto_accepts) > 1:
+        options = [
+            f"{i} => {p['first_name']} {p['last_name']} (gender={p['gender']}, jewish={p['is_jewish']})"
+            for i, p in enumerate(auto_accepts)
+        ]
+        options_str = "\n".join(options)
+        choice = input(f"Multiple 'auto_accept' matches for '{first_name} {last_name or ''}' and email {email}. Choose one:\n\n{options_str}\n\nSelect index or 'n' to skip: ")
+        if choice.lower() == "n":
+            handle_indices_list.append((first_name, last_name))
+            return None
+        try:
+            person = auto_accepts[int(choice)]
+            update_names_if_substring(conn, person['id'], person['first_name'], person['last_name'], first_name, last_name)
+            return person['id']
+        except:
+            print("Invalid choice. Skipping.")
+            handle_indices_list.append((first_name, last_name))
+            return None
+
+    if manual_reviews:
+        options = [
+            f"{i} => {p['first_name']} {p['last_name']} (gender={p['gender']}, jewish={p['is_jewish']})"
+            for i, p in enumerate(manual_reviews)
+        ]
+        options_str = "\n".join(options)
+        choice = input(f"No auto-accept found for '{first_name} {last_name or ''}', but possible matches:\n\n{options_str}\n\nSelect index or 'n' to skip: ")
+        if choice.lower() == "n":
+            handle_indices_list.append((first_name, last_name))
+            return None
+        try:
+            person = manual_reviews[int(choice)]
+            update_names_if_substring(conn, person['id'], person['first_name'], person['last_name'], first_name, last_name)
+            return person['id']
+        except:
+            print("Invalid choice. Skipping.")
+            handle_indices_list.append((first_name, last_name))
+            return None
+
+    print(f"No match found for '{first_name} {last_name or ''}'.")
+    handle_indices_list.append((first_name, last_name))
+    return None
+
+def normalize_gender(val):
+    if pd.isna(val): return None
+    s = str(val).strip().lower()
+    if s in {"f","female","woman","girl"}: return "f"
+    if s in {"m","male","man","boy"}: return "m"
+    return None
+
+def normalize_is_jewish(val):
+    if pd.isna(val): return None
+    s = str(val).strip().upper()
+    if s == 'J': return True
+    if s == 'N': return False
+    return None
+
+def normalize_school_with_email(school_response, general_email, school_email):
+    if pd.notna(school_email) and school_email.strip():
+        school_email_clean = str(school_email).strip().lower()
+
+        if any(domain in school_email_clean for domain in [
+            "@harvard.edu", "@college.harvard.edu"
+        ]):
+            return "harvard"
+        elif any(domain in school_email_clean for domain in [
+            "@hbs.edu", "@hms.harvard.edu", "@hsph.harvard.edu",
+            "@fas.harvard.edu", "@hillel.harvard.edu"
+        ]):
+            return "other"
+        elif "@mit.edu" in school_email_clean:
+            return "mit"
+        else:
+            return "other"
+
+    if pd.notna(general_email) and general_email.strip():
+        general_email_clean = str(general_email).strip().lower()
+
+        if any(domain in general_email_clean for domain in [
+            "@harvard.edu", "@college.harvard.edu"
+        ]):
+            return "harvard"
+        elif any(domain in general_email_clean for domain in [
+            "@hbs.edu", "@hms.harvard.edu", "@hsph.harvard.edu",
+            "@fas.harvard.edu"
+        ]):
+            return "other"
+        elif "@mit.edu" in general_email_clean:
+            return "mit"
+        elif ".edu" in general_email_clean:
+            return "other"
+
+    if pd.notna(school_response) and school_response.strip():
+        s = str(school_response).strip().lower()
+        if "harvard" in s and "business" not in s:
+            return "harvard"
+        elif "mit" in s:
+            return "mit"
+        else:
+            return "other"
+
+    return None
+
+GRADE_TO_YEAR = {
+    "freshman": 2029, "first": 2029, "first year": 2029, "1": 2029, "1st": 2029,
+    "sophomore": 2028, "second": 2028, "2": 2028, "2nd": 2028,
+    "junior": 2027, "third": 2027, "3": 2027, "3rd": 2027,
+    "senior": 2026, "fourth": 2026, "4": 2026, "4th": 2026,
+}
+
+def parse_class_year(val):
+    if pd.isna(val): return None
+    s = str(val).strip()
+
+    m = re.search(r"(20\d{2})", s)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r"['\']\s*(\d{2})", s)
+    if m:
+        short = int(m.group(1))
+        return 2000 + short
+
+    t = s.lower()
+    t = t.replace("year", "").strip()
+    t = t.replace("st year", "").replace("nd year", "").replace("rd year", "").replace("th year", "").strip()
+
+    if t in GRADE_TO_YEAR:
+        return GRADE_TO_YEAR[t]
+
+    words = re.findall(r"[a-z]+|\d+(?:st|nd|rd|th)?", t)
+    for w in words:
+        yr = GRADE_TO_YEAR.get(w)
+        if yr:
+            return yr
+
+    return None
+
+def create_event(conn):
+    """Create new event in database. Returns new_event_id or None."""
+    with conn.cursor() as cur:
+        cur.execute('SELECT COALESCE(MAX(id), 0) + 1 FROM Events')
+        new_event_id = cur.fetchone()[0]
+
+    print(f"New event will have ID: {new_event_id}")
+
+    category_valid = False
+    while not category_valid:
+        category = input('Enter category (speaker, party, speaker dinner, community dinner): ')
+        if category.lower() in ['speaker', 'party', 'speaker dinner', 'community dinner']:
+            category = category.lower()
+            category_valid = True
+        else:
+            print('Invalid category. Please enter a valid category.')
+
+    name = input('Enter name: ')
+    start_datetime = input('Enter start date and time (YYYY-MM-DD HH:MM): ')
+    start_datetime = start_datetime + ":00-05:00"
+    start_datetime_parsed = pd.to_datetime(start_datetime)
+    location = input('Enter location: ').lower()
+    description = input('Enter description: ')
+
+    with conn.cursor() as cur:
+        cur.execute('SELECT id FROM Events WHERE event_name = %s', (name,))
+        existing = cur.fetchone()
+
+        if existing:
+            print('Event already exists.')
+            return None
+        else:
+            cur.execute("""
+                INSERT INTO Events (id, event_name, category, location, start_datetime, description)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (new_event_id, name, category, location, start_datetime_parsed, description))
+            conn.commit()
+            print('Event added successfully.')
+            print(f"Event ID: {new_event_id}")
+            print(f"Name: {name}")
+            print(f"Category: {category}")
+            print(f"Location: {location}")
+            print(f"Start: {start_datetime_parsed}")
+            return new_event_id
+
+def import_csv(csv_path, new_event_id):
+    """Main import logic from notebook."""
+    # Configuration - hardcoded column mappings (can be parameterized later if needed)
+    approved_column = "Order Status"
+    rsvp_approved_values = ["Completed"]
+    rsvp_datetime_column = "Order Date/Time"
+    first_name_column = "First Name"
+    last_name_column = "Last Name"
+    email_column = "Email"
+    school_email_column = "What is your school email?"
+    phone_column = "Phone Number"
+    attendance_column = "Tickets Scanned"
+    invite_token_column = "Tracking Link"
+    gender_column_raw = "Detected Gender"
+    school_column_raw = "What school do you go to?"
+    year_column_raw = "What is your Class Year?"
+
+    # Load CSV
+    df_current = pd.read_csv(csv_path)
+    print(f"Loaded {len(df_current)} rows from CSV")
+
+    # Normalize data
+    df_current["_norm_gender"] = df_current[gender_column_raw].apply(normalize_gender)
+    df_current["_norm_school"] = df_current.apply(
+        lambda r: normalize_school_with_email(
+            r.get(school_column_raw, pd.NA),
+            r.get(email_column, ""),
+            r.get(school_email_column, pd.NA)
+        ),
+        axis=1
+    )
+    df_current["_norm_class_year"] = df_current[year_column_raw].apply(parse_class_year)
+    df_current["_norm_is_jewish"] = df_current.get("is_jewish", pd.NA).apply(normalize_is_jewish)
+
+    df_current[invite_token_column] = df_current[invite_token_column].apply(
+        lambda x: pd.NA if x == "email" else x
+    )
+
+    print("Data normalized successfully.")
+
+    conn = get_db_connection()
+
+    try:
+        # Process invite tokens
+        if invite_token_column in df_current.columns:
+            df_current[invite_token_column] = df_current[invite_token_column].fillna("default")
+            unique_tokens = df_current[invite_token_column].unique()
+
+            invite_token_map = {}
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, value FROM InviteTokens WHERE event_id = %s",
+                    (new_event_id,)
+                )
+                existing_tokens = cur.fetchall()
+                for token in existing_tokens:
+                    invite_token_map[token['value']] = token['id']
+
+            with conn.cursor() as cur:
+                for token in unique_tokens:
+                    token_str = str(token)
+                    if token_str not in invite_token_map:
+                        category = "personal outreach" if token_str != "default" else "mailing list"
+                        cur.execute("""
+                            INSERT INTO InviteTokens (event_id, category, value, description)
+                            VALUES (%s, %s, %s, %s)
+                            RETURNING id
+                        """, (new_event_id, category, token_str, ""))
+                        new_id = cur.fetchone()[0]
+                        invite_token_map[token_str] = new_id
+            conn.commit()
+            print(f"Processed {len(invite_token_map)} invite tokens.")
+        else:
+            df_current[invite_token_column] = "default"
+            invite_token_map = {"default": 1}
+
+        # Process each row
+        handle_indices_list = []
+        processed_count = 0
+        new_people_count = 0
+        new_contacts_count = 0
+        new_attendance_count = 0
+
+        for idx, row in df_current.iterrows():
+            raw_first = row.get(first_name_column, "")
+            raw_last = row.get(last_name_column, "")
+            raw_email = row.get(email_column, "")
+            raw_school_email = row.get(school_email_column, "")
+            raw_phone = row.get(phone_column, "")
+            raw_invite_token = row.get(invite_token_column, "default")
+            raw_rsvp_status = row.get(approved_column, pd.NA)
+            raw_rsvp_datetime = row.get(rsvp_datetime_column, None)
+            raw_attended = row.get(attendance_column, None)
+
+            email_clean = str(raw_email).strip().lower() if pd.notna(raw_email) else ""
+            school_email_clean = str(raw_school_email).strip().lower() if pd.notna(raw_school_email) else ""
+            phone_clean = str(raw_phone).strip() if pd.notna(raw_phone) else ""
+
+            primary_email_for_matching = school_email_clean if school_email_clean else email_clean
+
+            row_dict_for_matching = {
+                "first_name": raw_first,
+                "last_name": raw_last,
+                "email": primary_email_for_matching,
+                "phone": phone_clean
+            }
+
+            matched_person_id = find_person_id(
+                row_dict_for_matching,
+                conn,
+                email_col="email",
+                phone_col="phone",
+                handle_indices_list=handle_indices_list,
+                fuzzy_threshold=0.80
+            )
+
+            # Create new person if no match
+            if not matched_person_id and matched_person_id != 0:
+                norm_gender = row.get("_norm_gender", None)
+                norm_school = row.get("_norm_school", None)
+                norm_class_year = row.get("_norm_class_year", None)
+                norm_is_jewish = row.get("_norm_is_jewish", None)
+
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO People (first_name, last_name, gender, class_year, is_jewish, school, preferred_name)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (
+                        raw_first.strip().title(),
+                        raw_last.strip().title(),
+                        norm_gender,
+                        norm_class_year,
+                        norm_is_jewish,
+                        norm_school,
+                        None
+                    ))
+                    matched_person_id = cur.fetchone()[0]
+                conn.commit()
+                new_people_count += 1
+
+                with conn.cursor() as cur:
+                    if school_email_clean:
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, "school email", school_email_clean, False))
+                        new_contacts_count += 1
+
+                    if email_clean and email_clean != school_email_clean:
+                        contact_type = "school email" if ".edu" in email_clean else "personal email"
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, contact_type, email_clean, False))
+                        new_contacts_count += 1
+
+                    if phone_clean:
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, "phone", phone_clean, False))
+                        new_contacts_count += 1
+                conn.commit()
+
+            else:
+                with conn.cursor() as cur:
+                    if school_email_clean:
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, "school email", school_email_clean, False))
+
+                    if email_clean and email_clean != school_email_clean:
+                        contact_type = "school email" if ".edu" in email_clean else "personal email"
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, contact_type, email_clean, False))
+
+                    if phone_clean:
+                        cur.execute("""
+                            INSERT INTO Contacts (person_id, contact_type, contact_value, is_verified)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (person_id, contact_type, contact_value) DO NOTHING
+                        """, (matched_person_id, "phone", phone_clean, False))
+                conn.commit()
+
+            # Create attendance record
+            approved_val = raw_rsvp_status in rsvp_approved_values
+            checked_in_val = str(raw_attended).strip().lower() in ["1", "1.0", "true", "yes"]
+            rsvp_val = not pd.isna(raw_rsvp_status) or raw_rsvp_status == ""
+
+            token_str = str(raw_invite_token)
+            invite_token_id = invite_token_map.get(token_str, invite_token_map.get("default"))
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO Attendance
+                    (person_id, event_id, rsvp, approved, checked_in, rsvp_datetime, is_first_event, invite_token_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (person_id, event_id) DO NOTHING
+                """, (
+                    matched_person_id,
+                    new_event_id,
+                    rsvp_val,
+                    approved_val,
+                    checked_in_val,
+                    raw_rsvp_datetime,
+                    False,
+                    invite_token_id
+                ))
+            conn.commit()
+            new_attendance_count += 1
+
+            processed_count += 1
+            if processed_count % 10 == 0:
+                print(f"Processed {processed_count}/{len(df_current)} rows...")
+
+        print(f"\n=== Import Complete ===")
+        print(f"Processed: {processed_count} rows")
+        print(f"New people: {new_people_count}")
+        print(f"New contacts: {new_contacts_count}")
+        print(f"New attendance records: {new_attendance_count}")
+
+        if handle_indices_list:
+            print(f"\nUnmatched names: {len(handle_indices_list)}")
+            for fn, ln in handle_indices_list:
+                print(f"  - {fn} {ln}")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error during import: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        conn.close()
+
+def update_mailing_lists():
+    """Update MailingList and AllMailing tables (from cells 16-17)."""
+    print("\n=== Updating Mailing Lists ===")
+    conn = get_db_connection()
+
+    try:
+        # Update MailingList table
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE MailingList RESTART IDENTITY CASCADE")
+
+            query = """
+            INSERT INTO MailingList (
+                first_name, last_name, gender, class_year, is_jewish, school,
+                event_attendance_count, event_rsvp_count,
+                school_email, personal_email, preferred_email, phone_number
+            )
+            WITH attendance_stats AS (
+                SELECT
+                    person_id,
+                    SUM(CASE WHEN checked_in THEN 1 ELSE 0 END) as event_attendance_count,
+                    SUM(CASE WHEN rsvp THEN 1 ELSE 0 END) as event_rsvp_count
+                FROM Attendance
+                GROUP BY person_id
+            ),
+            contact_emails AS (
+                SELECT
+                    person_id,
+                    MAX(CASE WHEN contact_type = 'school email' THEN contact_value END) as school_email,
+                    MAX(CASE WHEN contact_type = 'personal email' THEN contact_value END) as personal_email,
+                    MAX(CASE WHEN contact_type = 'phone' THEN contact_value END) as phone_number
+                FROM Contacts
+                GROUP BY person_id
+            )
+            SELECT
+                p.first_name,
+                p.last_name,
+                p.gender,
+                p.class_year,
+                p.is_jewish,
+                p.school,
+                COALESCE(a.event_attendance_count, 0) as event_attendance_count,
+                COALESCE(a.event_rsvp_count, 0) as event_rsvp_count,
+                c.school_email,
+                c.personal_email,
+                COALESCE(c.school_email, c.personal_email) as preferred_email,
+                c.phone_number
+            FROM People p
+            LEFT JOIN attendance_stats a ON p.id = a.person_id
+            LEFT JOIN contact_emails c ON p.id = c.person_id
+            ORDER BY p.last_name, p.first_name
+            """
+
+            cur.execute(query)
+            rows_inserted = cur.rowcount
+            conn.commit()
+
+            print(f"✓ Updated MailingList table with {rows_inserted} entries")
+
+        # Update AllMailing table
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE AllMailing RESTART IDENTITY CASCADE")
+
+            query = """
+            INSERT INTO AllMailing (first_name, last_name, school, contact_value, event_count)
+            WITH event_counts AS (
+                SELECT
+                    person_id,
+                    COUNT(*) FILTER (WHERE checked_in = TRUE) as event_count
+                FROM Attendance
+                GROUP BY person_id
+            )
+            SELECT
+                p.first_name,
+                p.last_name,
+                p.school,
+                c.contact_value,
+                COALESCE(e.event_count, 0)::NUMERIC(10,1) as event_count
+            FROM Contacts c
+            INNER JOIN People p ON c.person_id = p.id
+            LEFT JOIN event_counts e ON c.person_id = e.person_id
+            WHERE c.contact_type IN ('school email', 'personal email')
+            ORDER BY p.last_name, p.first_name
+            """
+
+            cur.execute(query)
+            rows_inserted = cur.rowcount
+            conn.commit()
+
+            print(f"✓ Updated AllMailing table with {rows_inserted} email contacts")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error updating mailing lists: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        conn.close()
+
+def main():
+    parser = argparse.ArgumentParser(description='Import event data from CSV to PostgreSQL')
+    parser.add_argument('csv_file', help='Path to the CSV file to import')
+    args = parser.parse_args()
+
+    csv_path = Path(args.csv_file)
+    if not csv_path.exists():
+        print(f"Error: CSV file not found: {csv_path}")
+        sys.exit(1)
+
+    print(f"Importing from: {csv_path}\n")
+
+    # Test connection
+    try:
+        conn = get_db_connection()
+        print("✓ Connected to database successfully")
+
+        # Create event
+        new_event_id = create_event(conn)
+        if not new_event_id:
+            print("Error: Could not create event")
+            sys.exit(1)
+
+        conn.close()
+
+        # Import CSV
+        import_csv(csv_path, new_event_id)
+
+        # Update mailing lists
+        update_mailing_lists()
+
+        print("\n✓ All done!")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
