@@ -1,17 +1,40 @@
 #!/usr/bin/env python3
 """
 Add the 'value' column to InviteTokens table if it doesn't exist.
+
+Usage:
+    python add_value_column.py --dbname railway --user postgres --password your_password --host yamabiko.proxy.rlwy.net --port 58300
+
+Or set environment variables:
+    export PGDATABASE=railway
+    export PGUSER=postgres
+    export PGPASSWORD=your_password
+    export PGHOST=yamabiko.proxy.rlwy.net
+    export PGPORT=58300
+    python add_value_column.py
 """
 import psycopg2
+import os
+import argparse
+from dotenv import load_dotenv
 
-# Railway connection string
-DATABASE_URL = "postgresql://postgres:OzafqpSfkSRdIkTpMNdgtbFvLPvmLYPw@yamabiko.proxy.rlwy.net:58300/railway"
+# Load environment variables from .env file
+load_dotenv()
 
-try:
-    conn = psycopg2.connect(DATABASE_URL)
+def add_value_column(dbname, user, password, host, port):
+    """Add the 'value' column to InviteTokens table."""
+    print(f"Connecting to {host}:{port}/{dbname} as {user}...")
+
+    conn = psycopg2.connect(
+        host=host,
+        port=port,
+        database=dbname,
+        user=user,
+        password=password
+    )
     cursor = conn.cursor()
 
-    print("Connected to Railway PostgreSQL")
+    print("✓ Connected to PostgreSQL")
 
     # Check if the column already exists
     cursor.execute("""
@@ -52,8 +75,32 @@ try:
     cursor.close()
     conn.close()
 
-except Exception as e:
-    print(f"✗ Error: {e}")
-    if 'conn' in locals():
-        conn.rollback()
-        conn.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Add value column to InviteTokens table')
+    parser.add_argument('--dbname', default=os.environ.get('PGDATABASE', 'railway'),
+                        help='Database name (default: railway or $PGDATABASE)')
+    parser.add_argument('--user', default=os.environ.get('PGUSER', 'postgres'),
+                        help='Database user (default: postgres or $PGUSER)')
+    parser.add_argument('--password', default=os.environ.get('PGPASSWORD', ''),
+                        help='Database password (default: $PGPASSWORD)')
+    parser.add_argument('--host', default=os.environ.get('PGHOST', 'yamabiko.proxy.rlwy.net'),
+                        help='Database host (default: yamabiko.proxy.rlwy.net or $PGHOST)')
+    parser.add_argument('--port', default=os.environ.get('PGPORT', '58300'),
+                        help='Database port (default: 58300 or $PGPORT)')
+
+    args = parser.parse_args()
+
+    print("=" * 70)
+    print("Migration: Add 'value' column to InviteTokens table")
+    print("=" * 70)
+    print()
+
+    try:
+        add_value_column(args.dbname, args.user, args.password, args.host, args.port)
+    except psycopg2.Error as e:
+        print(f"\n✗ Database error: {e}")
+        exit(1)
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
+        exit(1)

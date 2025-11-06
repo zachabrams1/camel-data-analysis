@@ -14,4 +14,4 @@ try:
     
     conn.close()
 except Exception as e:
-    print(f"❌ Connection failed: {e}")
+    print(f"❌ Connection failed: {e}")W

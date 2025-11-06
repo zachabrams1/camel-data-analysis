@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS Expenses (
 -- Subscribers table for newsletter/marketing subscriptions
 CREATE TABLE IF NOT EXISTS Subscribers (
     id SERIAL PRIMARY KEY,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
     email VARCHAR(255) UNIQUE NOT NULL
 );
 

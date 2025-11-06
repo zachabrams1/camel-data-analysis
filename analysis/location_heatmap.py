@@ -120,6 +120,7 @@ def fetch_event_data():
     """
     Fetch event data with attendance counts by school.
     Only includes events where students actually checked in.
+    Excludes sababa, bsmnt, and community dinners events.
     """
     query = """
     SELECT
@@ -133,6 +134,9 @@ def fetch_event_data():
     FROM Events e
     LEFT JOIN Attendance a ON e.id = a.event_id
     LEFT JOIN People p ON a.person_id = p.id
+    WHERE LOWER(e.event_name) NOT LIKE '%sababa%'
+      AND LOWER(e.event_name) NOT LIKE '%bsmnt%'
+      AND LOWER(e.event_name) NOT LIKE '%community dinner%'
     GROUP BY e.id, e.event_name, e.location, e.start_datetime
     HAVING COUNT(DISTINCT CASE WHEN a.checked_in = TRUE THEN a.person_id END) > 0
     ORDER BY e.start_datetime;
