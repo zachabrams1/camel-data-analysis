@@ -1,1 +1,10 @@
 venv
+
+# Environment variables - contains sensitive credentials
+.env
+.env.local
+.env.*.local
+
+# Environment examples (should not contain real credentials)
+# Remove the # below if you want to prevent .env.example from being committed
+# .env.example
