@@ -23,13 +23,20 @@ from pathlib import Path
 # Load environment variables
 load_dotenv()
 
+# Helper function to convert pandas NA to Python None for psycopg2
+def na_to_none(val):
+    """Convert pandas NA values to Python None for database compatibility."""
+    if pd.isna(val):
+        return None
+    return val
+
 # Database connection parameters
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST'),
-    'port': os.getenv('DB_PORT', 58300),
-    'database': os.getenv('DB_NAME', 'postgres'),
-    'user': os.getenv('DB_USER', 'postgres'),
-    'password': os.getenv('DB_PASSWORD')
+    'host': os.getenv('PGHOST'),
+    'port': os.getenv('PGPORT', 58300),
+    'database': os.getenv('PGDATABASE', 'postgres'),
+    'user': os.getenv('PGUSER', 'postgres'),
+    'password': os.getenv('PGPASSWORD')
 }
 
 def get_db_connection():
@@ -286,8 +293,8 @@ def find_person_id(row, conn, email_col=None, phone_col=None, handle_indices_lis
 def normalize_gender(val):
     if pd.isna(val): return None
     s = str(val).strip().lower()
-    if s in {"f","female","woman","girl"}: return "f"
-    if s in {"m","male","man","boy"}: return "m"
+    if s in {"f","female","woman","girl"}: return "F"
+    if s in {"m","male","man","boy"}: return "M"
     return None
 
 def normalize_is_jewish(val):
@@ -440,8 +447,18 @@ def import_csv(csv_path, new_event_id):
     school_column_raw = "What school do you go to?"
     year_column_raw = "What is your Class Year?"
 
-    # Load CSV
-    df_current = pd.read_csv(csv_path)
+    # Load CSV with explicit dtype for phone/email columns to prevent float conversion
+    df_current = pd.read_csv(csv_path, dtype={
+        phone_column: str,
+        email_column: str,
+        school_email_column: str
+    }, header=0)
+
+    # Filter out any rows that appear to be duplicate headers
+    # This happens when the header row is incorrectly treated as data
+    df_current = df_current[df_current[first_name_column] != first_name_column]
+    df_current = df_current.reset_index(drop=True)
+
     print(f"Loaded {len(df_current)} rows from CSV")
 
     # Normalize data
@@ -455,7 +472,10 @@ def import_csv(csv_path, new_event_id):
         axis=1
     )
     df_current["_norm_class_year"] = df_current[year_column_raw].apply(parse_class_year)
-    df_current["_norm_is_jewish"] = df_current.get("is_jewish", pd.NA).apply(normalize_is_jewish)
+    if "is_jewish" in df_current.columns:
+        df_current["_norm_is_jewish"] = df_current["is_jewish"].apply(normalize_is_jewish)
+    else:
+        df_current["_norm_is_jewish"] = None
 
     df_current[invite_token_column] = df_current[invite_token_column].apply(
         lambda x: pd.NA if x == "email" else x
@@ -518,6 +538,10 @@ def import_csv(csv_path, new_event_id):
             raw_rsvp_datetime = row.get(rsvp_datetime_column, None)
             raw_attended = row.get(attendance_column, None)
 
+            # Clean names - handle NaN values from pandas
+            first_name_clean = str(raw_first).strip().title() if pd.notna(raw_first) and str(raw_first).strip() else ""
+            last_name_clean = str(raw_last).strip().title() if pd.notna(raw_last) and str(raw_last).strip() else ""
+
             email_clean = str(raw_email).strip().lower() if pd.notna(raw_email) else ""
             school_email_clean = str(raw_school_email).strip().lower() if pd.notna(raw_school_email) else ""
             phone_clean = str(raw_phone).strip() if pd.notna(raw_phone) else ""
@@ -525,8 +549,8 @@ def import_csv(csv_path, new_event_id):
             primary_email_for_matching = school_email_clean if school_email_clean else email_clean
 
             row_dict_for_matching = {
-                "first_name": raw_first,
-                "last_name": raw_last,
+                "first_name": first_name_clean,
+                "last_name": last_name_clean,
                 "email": primary_email_for_matching,
                 "phone": phone_clean
             }
@@ -542,10 +566,10 @@ def import_csv(csv_path, new_event_id):
 
             # Create new person if no match
             if not matched_person_id and matched_person_id != 0:
-                norm_gender = row.get("_norm_gender", None)
-                norm_school = row.get("_norm_school", None)
-                norm_class_year = row.get("_norm_class_year", None)
-                norm_is_jewish = row.get("_norm_is_jewish", None)
+                norm_gender = na_to_none(row.get("_norm_gender", None))
+                norm_school = na_to_none(row.get("_norm_school", None))
+                norm_class_year = na_to_none(row.get("_norm_class_year", None))
+                norm_is_jewish = na_to_none(row.get("_norm_is_jewish", None))
 
                 with conn.cursor() as cur:
                     cur.execute("""
@@ -553,8 +577,8 @@ def import_csv(csv_path, new_event_id):
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                     """, (
-                        raw_first.strip().title(),
-                        raw_last.strip().title(),
+                        first_name_clean,
+                        last_name_clean,
                         norm_gender,
                         norm_class_year,
                         norm_is_jewish,
@@ -637,7 +661,7 @@ def import_csv(csv_path, new_event_id):
                     rsvp_val,
                     approved_val,
                     checked_in_val,
-                    raw_rsvp_datetime,
+                    na_to_none(raw_rsvp_datetime),
                     False,
                     invite_token_id
                 ))
@@ -706,7 +730,11 @@ def update_mailing_lists():
                 p.last_name,
                 p.gender,
                 p.class_year,
-                p.is_jewish,
+                CASE
+                    WHEN p.is_jewish = TRUE THEN 'J'
+                    WHEN p.is_jewish = FALSE THEN 'N'
+                    ELSE NULL
+                END as is_jewish,
                 p.school,
                 COALESCE(a.event_attendance_count, 0) as event_attendance_count,
                 COALESCE(a.event_rsvp_count, 0) as event_rsvp_count,

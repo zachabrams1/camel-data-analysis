@@ -28,31 +28,27 @@ def main():
     download_script = Path(__file__).parent / "posh_scraper" / "download_event.py"
 
     try:
+        # Run without capturing output so the user can interact with prompts
         result = subprocess.run(
             [sys.executable, str(download_script)],
-            capture_output=True,
             text=True
         )
 
         # Check for errors
         if result.returncode != 0:
             print("✗ Download failed!")
-            print(result.stderr)
             return 1
 
-        # Print the output (so user sees the interactive prompts)
-        print(result.stdout)
+        # Find the most recently created CSV file in the Raw directory
+        raw_dir = Path(__file__).parent / "Raw"
+        csv_files = list(raw_dir.glob("*.csv"))
 
-        # Parse the output to find the CSV file path
-        csv_path = None
-        for line in result.stdout.split('\n'):
-            if line.startswith('OUTPUT_FILE:'):
-                csv_path = line.split('OUTPUT_FILE:')[1].strip()
-                break
-
-        if not csv_path:
-            print("✗ Could not find downloaded CSV file path")
+        if not csv_files:
+            print("✗ Could not find any CSV files in Raw directory")
             return 1
+
+        # Get the most recently modified file
+        csv_path = str(max(csv_files, key=lambda p: p.stat().st_mtime))
 
         print(f"\n✓ Downloaded: {csv_path}\n")
 
