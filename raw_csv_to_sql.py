@@ -445,7 +445,7 @@ def import_csv(csv_path, new_event_id):
     invite_token_column = "Tracking Link"
     gender_column_raw = "Detected Gender"
     school_column_raw = "What school do you go to?"
-    year_column_raw = "What is your Class Year?"
+    year_column_raw = "What is your graduation year?"
 
     # Load CSV with explicit dtype for phone/email columns to prevent float conversion
     df_current = pd.read_csv(csv_path, dtype={
