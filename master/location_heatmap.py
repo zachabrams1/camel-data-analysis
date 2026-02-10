@@ -376,7 +376,7 @@ def main():
     print("Starting location heat map generation...")
 
     # Read data from CSV file instead of database
-    output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'analysis_outputs')
+    output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'analysis_outputs_sql')
     csv_path = os.path.join(output_dir, 'location_heatmap_data.csv')
 
     print(f"\nReading event data from: {csv_path}")
